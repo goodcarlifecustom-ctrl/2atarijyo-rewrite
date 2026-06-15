@@ -68,6 +68,12 @@ function countOccurrences(text, phrase) {
   return (text.match(new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
 }
 
+function collectParagraphTexts(html) {
+  return [...html.matchAll(/<p\b[^>]*>[\s\S]*?<\/p>/gi)]
+    .map((match) => stripHtml(match[0]).replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
 
 function tableBlocks(html) {
   return [...html.matchAll(/<table\b[\s\S]*?<\/table>/gi)].map((match) => match[0]);
@@ -161,6 +167,13 @@ if (original !== null && rewritten !== null) {
   });
 
   addCheck("html_not_severely_broken", !hasSevereHtmlBreakage(rewritten), "WordPressに貼り付け可能なHTMLとして大きく崩れていない");
+
+  const paragraphTexts = collectParagraphTexts(rewritten);
+  const duplicateParagraphs = duplicates(paragraphTexts);
+  addCheck("p_tags_not_duplicated", duplicateParagraphs.length === 0, "完全一致するpタグが2回以上ない", {
+    duplicateCount: duplicateParagraphs.length,
+    duplicates: duplicateParagraphs,
+  });
 
   const comparisonTables = tableBlocks(rewritten).filter(isComparisonTable);
   const needsComparison = likelyNeedsComparisonTable(rewritten);
