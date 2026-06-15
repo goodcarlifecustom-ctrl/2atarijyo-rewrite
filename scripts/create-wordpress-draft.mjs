@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const articleDir = "articles/sample-article";
 const rewrittenPath = path.join(articleDir, "rewritten.html");
@@ -92,17 +97,61 @@ if (!/^draft|pending|private$/i.test(status)) {
 const title = await getTitle(content);
 const endpoint = new URL(`wp/v2/${postType}`, restRoot).toString();
 
-const response = await fetch(endpoint, {
-  method: "POST",
-  headers: {
-    authorization: buildAuthHeader(username, applicationPassword),
-    "content-type": "application/json",
-    accept: "application/json",
-  },
-  body: JSON.stringify({ title, content, status }),
+async function postJson(url, body, headers) {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+    });
+    return { ok: response.ok, status: response.status, statusText: response.statusText, text: await response.text() };
+  } catch (fetchError) {
+    try {
+      const tempDir = await mkdtemp(path.join(os.tmpdir(), "wp-draft-"));
+      const bodyPath = path.join(tempDir, "body.json");
+      const configPath = path.join(tempDir, "curl.conf");
+      const headerConfig = Object.entries(headers)
+        .map(([name, value]) => `header = "${String(`${name}: ${value}`).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`)
+        .join("\n");
+      await writeFile(bodyPath, body, "utf8");
+      await writeFile(configPath, `${headerConfig}\n`, "utf8");
+      try {
+        const { stdout } = await execFileAsync("curl", [
+          "--config",
+          configPath,
+          "--location",
+          "--silent",
+          "--show-error",
+          "--max-time",
+          "60",
+          "--request",
+          "POST",
+          "--data-binary",
+          `@${bodyPath}`,
+          "--write-out",
+          "\n%{http_code}",
+          url,
+        ], { encoding: "utf8", maxBuffer: 50 * 1024 * 1024 });
+        const marker = stdout.lastIndexOf("\n");
+        const text = marker >= 0 ? stdout.slice(0, marker) : stdout;
+        const statusCode = marker >= 0 ? Number(stdout.slice(marker + 1)) : 0;
+        return { ok: statusCode >= 200 && statusCode < 300, status: statusCode, statusText: "", text };
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    } catch {
+      throw fetchError;
+    }
+  }
+}
+
+const response = await postJson(endpoint, JSON.stringify({ title, content, status }), {
+  authorization: buildAuthHeader(username, applicationPassword),
+  "content-type": "application/json",
+  accept: "application/json",
 });
 
-const responseText = await response.text();
+const responseText = response.text;
 let responseJson;
 try {
   responseJson = JSON.parse(responseText);
