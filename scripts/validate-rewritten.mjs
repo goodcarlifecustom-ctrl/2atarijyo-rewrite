@@ -3,7 +3,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const articleDir = "articles/sample-article";
+const articleDir = process.argv[2] || "articles/sample-article";
 const originalPath = path.join(articleDir, "original.html");
 const rewrittenPath = path.join(articleDir, "rewritten.html");
 const resultPath = path.join(articleDir, "validation-result.json");
@@ -68,12 +68,148 @@ function countOccurrences(text, phrase) {
   return (text.match(new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
 }
 
+const genericSafetyPhrases = [
+  "好意や合意が自動的に生まれるわけではありません",
+  "相手の自由意思を最優先にしましょう",
+  "風俗での接客はあくまで仕事",
+  "相手の生活リズムや仕事への向き合い方",
+  "目先の費用だけではなく",
+  "関係が終わるときの連絡方法",
+  "希望条件を丁寧に確認しましょう",
+];
+
 function collectParagraphTexts(html) {
   return [...html.matchAll(/<p\b[^>]*>[\s\S]*?<\/p>/gi)]
-    .map((match) => stripHtml(match[0]).replace(/\s+/g, " ").trim())
-    .filter(Boolean);
+    .map((match, index) => ({ index: index + 1, text: stripHtml(match[0]).replace(/\s+/g, " ").trim() }))
+    .filter((item) => item.text);
 }
 
+function compactText(value) {
+  return value.replace(/[\s「」『』（）()【】\[\]、，。．・:：;；!！?？]/g, "").trim();
+}
+
+function normalizeTopicIntroText(value) {
+  return compactText(value.replace(/^[^。！？]{1,80}については、/u, ""));
+}
+
+function normalizeSupplementText(value) {
+  return compactText(value.replace(/^補足ポイント\s*[0-9０-９]+\s*[:：]\s*/u, ""));
+}
+
+function similarity(a, b) {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length > b.length ? a : b;
+  if (shorter.length < 40) return 0;
+  if (longer.includes(shorter)) return shorter.length / longer.length;
+  const grams = new Set();
+  for (let i = 0; i <= shorter.length - 3; i += 1) grams.add(shorter.slice(i, i + 3));
+  if (grams.size === 0) return 0;
+  let overlap = 0;
+  for (const gram of grams) if (longer.includes(gram)) overlap += 1;
+  return overlap / grams.size;
+}
+
+function duplicateGroups(items, keyFn, minLength = 1) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = keyFn(item.text);
+    if (!key || key.length < minLength) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return [...groups.entries()]
+    .filter(([, values]) => values.length >= 2)
+    .map(([key, values]) => ({ key, paragraphs: values.map((item) => item.index), texts: values.map((item) => item.text) }));
+}
+
+function highSimilarityGroups(items, keyFn, threshold = 0.9) {
+  const groups = [];
+  for (const item of items) {
+    const key = keyFn(item.text);
+    if (!key || key.length < 40) continue;
+    let group = groups.find((candidate) => similarity(key, candidate.key) >= threshold);
+    if (!group) {
+      group = { key, items: [] };
+      groups.push(group);
+    }
+    group.items.push(item);
+  }
+  return groups
+    .filter((group) => group.items.length >= 2)
+    .map((group) => ({ key: group.key, paragraphs: group.items.map((item) => item.index), texts: group.items.map((item) => item.text) }));
+}
+
+function collectParagraphContexts(html) {
+  const contexts = [];
+  const tokenRe = /<(h[23])\b[^>]*>[\s\S]*?<\/\1>|<p\b[^>]*>[\s\S]*?<\/p>/gi;
+  let h2 = "";
+  let h3 = "";
+  let paragraphIndex = 0;
+  for (const match of html.matchAll(tokenRe)) {
+    const token = match[0];
+    if (/^<h2\b/i.test(token)) {
+      h2 = stripHtml(token);
+      h3 = "";
+    } else if (/^<h3\b/i.test(token)) {
+      h3 = stripHtml(token);
+    } else {
+      paragraphIndex += 1;
+      const text = stripHtml(token).replace(/\s+/g, " ").trim();
+      contexts.push({ index: paragraphIndex, h2, h3, text, safetyHits: genericSafetyPhrases.filter((phrase) => text.includes(phrase)) });
+    }
+  }
+  return contexts;
+}
+
+function consecutiveGenericSafetyAcrossH3(contexts) {
+  const sequences = [];
+  let current = [];
+  for (const context of contexts) {
+    if (context.h3 && context.safetyHits.length > 0) {
+      if (current.length === 0 || current[current.length - 1].h3 !== context.h3) current.push(context);
+    } else if (current.length > 1) {
+      sequences.push(current);
+      current = [];
+    } else {
+      current = [];
+    }
+  }
+  if (current.length > 1) sequences.push(current);
+  return sequences.map((sequence) => sequence.map((item) => ({ paragraph: item.index, h3: item.h3, hits: item.safetyHits })));
+}
+
+function longSimilarSupplementRuns(items) {
+  const runs = [];
+  let current = [];
+  for (const item of items) {
+    const isSupplement = /^補足ポイント\s*[0-9０-９]+\s*[:：]/u.test(item.text);
+    if (!isSupplement) {
+      if (current.length >= 10) runs.push(current);
+      current = [];
+      continue;
+    }
+    const key = normalizeSupplementText(item.text);
+    if (current.length === 0 || similarity(key, current[0].key) >= 0.85) {
+      current.push({ ...item, key });
+    } else {
+      if (current.length >= 10) runs.push(current);
+      current = [{ ...item, key }];
+    }
+  }
+  if (current.length >= 10) runs.push(current);
+  return runs.map((run) => run.map((item) => ({ paragraph: item.index, text: item.text })));
+}
+
+
+function isPlaceholderRewritten(html) {
+  const withoutComments = html.replace(/<!--[\s\S]*?-->/g, "").trim();
+  return (
+    withoutComments.length === 0 &&
+    /Codexがリライト後HTMLをここに作成します|リライト後HTML|placeholder/i.test(html)
+  ) || /^<!--\s*Codexがリライト後HTMLをここに作成します\s*-->\s*$/u.test(html.trim());
+}
 
 function tableBlocks(html) {
   return [...html.matchAll(/<table\b[\s\S]*?<\/table>/gi)].map((match) => match[0]);
@@ -125,13 +261,23 @@ const rewritten = await readOptional(rewrittenPath);
 addCheck("original_exists", original !== null, `${originalPath} が存在する`);
 addCheck("rewritten_exists", rewritten !== null, `${rewrittenPath} が存在する`);
 
+const rewrittenIsPlaceholder = rewritten !== null && isPlaceholderRewritten(rewritten);
+
 if (rewritten !== null) {
   addCheck("rewritten_not_empty", rewritten.trim().length > 0, "rewritten.html が空ではない", {
     bytes: Buffer.byteLength(rewritten, "utf8"),
   });
+  if (rewrittenIsPlaceholder) {
+    checks.push({
+      name: "rewritten_placeholder_skipped",
+      passed: true,
+      message: "rewritten.html は明らかなプレースホルダーのため通常validate対象から除外しました",
+      details: { articleDir, rewrittenPath },
+    });
+  }
 }
 
-if (original !== null && rewritten !== null) {
+if (original !== null && rewritten !== null && !rewrittenIsPlaceholder) {
   const originalTextLength = stripHtml(original).length;
   const rewrittenTextLength = stripHtml(rewritten).length;
   const lengthRatio = originalTextLength === 0 ? 1 : rewrittenTextLength / originalTextLength;
@@ -169,10 +315,43 @@ if (original !== null && rewritten !== null) {
   addCheck("html_not_severely_broken", !hasSevereHtmlBreakage(rewritten), "WordPressに貼り付け可能なHTMLとして大きく崩れていない");
 
   const paragraphTexts = collectParagraphTexts(rewritten);
-  const duplicateParagraphs = duplicates(paragraphTexts);
-  addCheck("p_tags_not_duplicated", duplicateParagraphs.length === 0, "完全一致するpタグが2回以上ない", {
-    duplicateCount: duplicateParagraphs.length,
-    duplicates: duplicateParagraphs,
+  const exactDuplicateGroups = duplicateGroups(paragraphTexts, (text) => text);
+  addCheck("p_tags_not_duplicated", exactDuplicateGroups.length === 0, "完全一致するpタグが2回以上ない", {
+    duplicateCount: exactDuplicateGroups.length,
+    duplicates: exactDuplicateGroups,
+  });
+
+  const topicIntroDuplicateGroups = highSimilarityGroups(
+    paragraphTexts.filter((item) => /^[^。！？]{1,80}については、/u.test(item.text)),
+    normalizeTopicIntroText,
+    0.9,
+  );
+  addCheck("topic_intro_normalized_p_tags_not_duplicated", topicIntroDuplicateGroups.length === 0, "「〇〇については、」を除外した正規化本文が2回以上ない", {
+    duplicateCount: topicIntroDuplicateGroups.length,
+    duplicates: topicIntroDuplicateGroups,
+  });
+
+  const supplementDuplicateGroups = duplicateGroups(
+    paragraphTexts.filter((item) => /^補足ポイント\s*[0-9０-９]+\s*[:：]/u.test(item.text)),
+    normalizeSupplementText,
+    40,
+  );
+  addCheck("supplement_number_normalized_p_tags_not_duplicated", supplementDuplicateGroups.length === 0, "「補足ポイント数字：」を除外した正規化本文が2回以上ない", {
+    duplicateCount: supplementDuplicateGroups.length,
+    duplicates: supplementDuplicateGroups,
+  });
+
+  const paragraphContexts = collectParagraphContexts(rewritten);
+  const genericSafetySequences = consecutiveGenericSafetyAcrossH3(paragraphContexts);
+  addCheck("generic_safety_text_not_repeated_across_consecutive_h3", genericSafetySequences.length === 0, "汎用安全文が複数H3に連続していない", {
+    sequenceCount: genericSafetySequences.length,
+    sequences: genericSafetySequences,
+  });
+
+  const supplementRuns = longSimilarSupplementRuns(paragraphTexts);
+  addCheck("similar_supplements_not_mass_generated", supplementRuns.length === 0, "同一または高類似の補足文が10件以上並んでいない", {
+    runCount: supplementRuns.length,
+    runs: supplementRuns,
   });
 
   const comparisonTables = tableBlocks(rewritten).filter(isComparisonTable);
