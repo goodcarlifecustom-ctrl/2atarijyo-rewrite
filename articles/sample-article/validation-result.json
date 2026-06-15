@@ -1,6 +1,6 @@
 {
   "ok": true,
-  "generatedAt": "2026-06-15T06:03:04.034Z",
+  "generatedAt": "2026-06-15T06:34:39.499Z",
   "files": {
     "originalPath": "articles/sample-article/original.html",
     "rewrittenPath": "articles/sample-article/rewritten.html"
@@ -23,7 +23,7 @@
       "passed": true,
       "message": "rewritten.html が空ではない",
       "details": {
-        "bytes": 111868
+        "bytes": 111565
       }
     },
     {
@@ -32,8 +32,8 @@
       "message": "元記事より文字数が大きく減っていない",
       "details": {
         "originalTextLength": 18406,
-        "rewrittenTextLength": 20689,
-        "lengthRatio": 1.124
+        "rewrittenTextLength": 20397,
+        "lengthRatio": 1.108
       }
     },
     {
@@ -283,9 +283,9 @@
       "details": {
         "fallbackRatios": [
           {
-            "fallbackCount": 5,
-            "cellCount": 60,
-            "ratio": 0.08333333333333333
+            "fallbackCount": 4,
+            "cellCount": 54,
+            "ratio": 0.07407407407407407
           }
         ]
       }
