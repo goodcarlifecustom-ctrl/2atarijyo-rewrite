@@ -235,6 +235,101 @@ function likelyNeedsComparisonTable(html) {
   return h3Count >= 2 && /(おすすめ|ランキング|比較|アプリ|サービス|店舗|商品|紹介)/.test(text);
 }
 
+function divBlocksWithClass(html, classPattern) {
+  const blocks = [];
+  const divRe = /<\/?div\b[^>]*>/gi;
+  for (const start of html.matchAll(/<div\b[^>]*class\s*=\s*(["'])(?=[^"']*?(?:cap_box|capbox|swell-block-capbox))[^"']*\1[^>]*>/gi)) {
+    divRe.lastIndex = start.index;
+    let depth = 0;
+    for (const match of html.matchAll(divRe)) {
+      if (match.index < start.index) continue;
+      if (match[0].startsWith("</")) depth -= 1;
+      else depth += 1;
+      if (depth === 0) {
+        const block = html.slice(start.index, match.index + match[0].length);
+        if (classPattern.test(block)) blocks.push(block);
+        break;
+      }
+    }
+  }
+  return blocks;
+}
+
+function wakarukotoCapboxes(html) {
+  return divBlocksWithClass(html, /cap_box|capbox|swell-block-capbox/i).filter((block) => /この記事でわかること/u.test(stripHtml(block)));
+}
+
+function headingSections(html) {
+  const matches = [...html.matchAll(/<h([23])\b[^>]*>[\s\S]*?<\/h\1>/gi)].map((match) => ({
+    level: Number(match[1]),
+    html: match[0],
+    text: stripHtml(match[0]).replace(/\s+/g, " ").trim(),
+    index: match.index,
+  }));
+  return matches.map((heading, index) => ({
+    ...heading,
+    body: html.slice(heading.index + heading.html.length, matches[index + 1]?.index ?? html.length),
+  }));
+}
+
+function emptyHeadingSections(html) {
+  return headingSections(html).filter((section) => {
+    const bodyText = stripHtml(section.body).replace(/\s+/g, "").trim();
+    return bodyText.length === 0;
+  });
+}
+
+function normalizedMassHeading(text) {
+  return text.replace(/[0-9０-９]+/gu, "#").replace(/\s+/g, "").trim();
+}
+
+function massGeneratedHeadings(html) {
+  const groups = new Map();
+  for (const section of headingSections(html)) {
+    if (!/[0-9０-９]/u.test(section.text)) continue;
+    if (!/(具体例|ポイント|チェックリスト|使い分け|見直し|安全確認)/u.test(section.text)) continue;
+    const key = normalizedMassHeading(section.text);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(section.text);
+  }
+  return [...groups.entries()].filter(([, values]) => values.length >= 3).map(([key, values]) => ({ key, values }));
+}
+
+function h3DuplicateTexts(html) {
+  const texts = [...html.matchAll(/<h3\b[^>]*>[\s\S]*?<\/h3>/gi)].map((match) => stripHtml(match[0]).replace(/\s+/g, " ").trim()).filter(Boolean);
+  return duplicates(texts);
+}
+
+function unnaturalJapaneseHits(text) {
+  const patterns = [
+    /サービスサービス/u,
+    /必要ことです/u,
+    /注意ことです/u,
+    /重要ことです/u,
+    /([^。！？]{1,40})は、\1は、/u,
+  ];
+  return patterns.filter((pattern) => pattern.test(text)).map((pattern) => String(pattern));
+}
+
+function tableRows(tableHtml) {
+  return [...tableHtml.matchAll(/<tr\b[\s\S]*?<\/tr>/gi)].map((match) => match[0]).filter((row) => /<td\b/i.test(row));
+}
+
+function tableCells(rowHtml) {
+  return [...rowHtml.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => stripHtml(match[1]).replace(/\s+/g, " ").trim());
+}
+
+function fallbackRatioInTable(tableHtml) {
+  const cells = tableRows(tableHtml).flatMap(tableCells);
+  const fallbackCount = cells.filter((cell) => cell.includes("追加確認が必要")).length;
+  return { fallbackCount, cellCount: cells.length, ratio: cells.length === 0 ? 0 : fallbackCount / cells.length };
+}
+
+function abstractComparisonItems(tableHtml) {
+  const abstractPatterns = [/を選ぶ/u, /を確認/u, /のポイント/u, /チェックリスト/u, /会員数/u, /年齢層/u, /完全無料.*避け/u, /セキュリティ/u, /機能があるか/u, /しっかりしているか/u];
+  return tableRows(tableHtml).map((row) => tableCells(row)[0] || "").filter((cell) => abstractPatterns.some((pattern) => pattern.test(cell)));
+}
+
 function hasSevereHtmlBreakage(html) {
   const stack = [];
   const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
@@ -314,6 +409,22 @@ if (original !== null && rewritten !== null && !rewrittenIsPlaceholder) {
 
   addCheck("html_not_severely_broken", !hasSevereHtmlBreakage(rewritten), "WordPressに貼り付け可能なHTMLとして大きく崩れていない");
 
+  const wakaruCapboxes = wakarukotoCapboxes(rewritten);
+  const wakaruCapboxesWithTable = wakaruCapboxes.filter((block) => /<table\b/i.test(block));
+  addCheck("comparison_table_not_inside_wakarukoto_capbox", wakaruCapboxesWithTable.length === 0, "「この記事でわかること」のcapbox内に比較表が入っていない", { count: wakaruCapboxesWithTable.length });
+
+  const emptyHeadings = emptyHeadingSections(rewritten);
+  addCheck("empty_h2_h3_sections_not_excessive", emptyHeadings.length < 3, "本文のないH2/H3が一定数以上ない", { count: emptyHeadings.length, headings: emptyHeadings.map((section) => section.text) });
+
+  const massHeadings = massGeneratedHeadings(rewritten);
+  addCheck("number_only_mass_generated_headings_absent", massHeadings.length === 0, "数字だけ違う量産見出しがない", { groups: massHeadings });
+
+  const duplicateH3Texts = h3DuplicateTexts(rewritten);
+  addCheck("h3_texts_not_duplicated", duplicateH3Texts.length === 0, "同じH3文言が複数回出ていない", { duplicates: duplicateH3Texts });
+
+  const unnaturalHits = unnaturalJapaneseHits(stripHtml(rewritten));
+  addCheck("unnatural_japanese_phrases_absent", unnaturalHits.length === 0, "不自然な日本語表現がない", { hits: unnaturalHits });
+
   const paragraphTexts = collectParagraphTexts(rewritten);
   const exactDuplicateGroups = duplicateGroups(paragraphTexts, (text) => text);
   addCheck("p_tags_not_duplicated", exactDuplicateGroups.length === 0, "完全一致するpタグが2回以上ない", {
@@ -354,6 +465,9 @@ if (original !== null && rewritten !== null && !rewrittenIsPlaceholder) {
     runs: supplementRuns,
   });
 
+  const comparisonBlockCount = (rewritten.match(/class=["'][^"']*comparison-table-block/gi) || []).length;
+  addCheck("comparison_table_block_not_duplicated", comparisonBlockCount <= 1, "comparison-table-block が2つ以上ない", { count: comparisonBlockCount });
+
   const comparisonTables = tableBlocks(rewritten).filter(isComparisonTable);
   const needsComparison = likelyNeedsComparisonTable(rewritten);
   addCheck("comparison_table_not_duplicated", comparisonTables.length <= 1, "比較表が重複していない", {
@@ -373,6 +487,13 @@ if (original !== null && rewritten !== null && !rewrittenIsPlaceholder) {
       missingCount: missingRel.length,
     });
     addCheck("comparison_table_has_no_empty_cells", !/<td[^>]*>\s*<\/td>/i.test(comparisonTables.join("\n")), "比較表に空のセルがない");
+
+    const fallbackRatios = comparisonTables.map(fallbackRatioInTable);
+    const lowQualityTables = fallbackRatios.filter((item) => item.ratio >= 0.5);
+    addCheck("comparison_table_fallback_under_half", lowQualityTables.length === 0, "比較表の半数以上が「追加確認が必要」ではない", { fallbackRatios });
+
+    const abstractItems = comparisonTables.flatMap(abstractComparisonItems);
+    addCheck("comparison_table_has_no_abstract_heading_items", abstractItems.length === 0, "比較表にサービス名ではない抽象見出しが入っていない", { abstractItems });
   } else {
     checks.push({
       name: "comparison_table_presence_warning",
