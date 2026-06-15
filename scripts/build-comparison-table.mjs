@@ -171,11 +171,11 @@ function extractCandidates(html) {
 
 function detectColumns(html) {
   const text = stripTags(html);
-  if (shopKeywords.some((keyword) => text.includes(keyword))) {
-    return ["名称", "特徴", "エリア", "向いている人", "注意点", "公式サイト・詳細"];
-  }
   if (serviceKeywords.some((keyword) => text.includes(keyword))) {
     return ["サービス名", "特徴", "料金・費用感", "向いている人", "注意点", "公式サイト・詳細"];
+  }
+  if (shopKeywords.some((keyword) => text.includes(keyword))) {
+    return ["名称", "特徴", "エリア", "向いている人", "注意点", "公式サイト・詳細"];
   }
   return ["比較項目", "特徴", "メリット", "注意点", "向いている人", "詳細"];
 }

@@ -14,6 +14,10 @@
 
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 async function loadEnv(filePath = ".env") {
   try {
@@ -141,19 +145,40 @@ const userAgent =
   "Mozilla/5.0 (compatible; ArticleImporter/1.0; +https://www.atarijo.com/)";
 
 async function fetchText(url, accept = "text/html", extraHeaders = {}) {
-  const res = await fetch(url, {
-    headers: {
-      "user-agent": userAgent,
-      accept,
-      ...extraHeaders,
-    },
-  });
+  const headers = {
+    "user-agent": userAgent,
+    accept,
+    ...extraHeaders,
+  };
 
-  if (!res.ok) {
-    throw new Error(`取得に失敗しました: ${res.status} ${res.statusText} - ${url}`);
+  try {
+    const res = await fetch(url, { headers });
+
+    if (!res.ok) {
+      throw new Error(`取得に失敗しました: ${res.status} ${res.statusText} - ${url}`);
+    }
+
+    return await res.text();
+  } catch (fetchError) {
+    const args = ["--fail", "--location", "--silent", "--show-error", "--max-time", "45"];
+
+    for (const [name, value] of Object.entries(headers)) {
+      if (!value || name.toLowerCase() === "authorization") continue;
+      args.push("--header", `${name}: ${value}`);
+    }
+
+    args.push(url);
+
+    try {
+      const { stdout } = await execFileAsync("curl", args, {
+        encoding: "utf8",
+        maxBuffer: 50 * 1024 * 1024,
+      });
+      return stdout;
+    } catch {
+      throw fetchError;
+    }
   }
-
-  return await res.text();
 }
 
 async function fetchJson(url, extraHeaders = {}) {
