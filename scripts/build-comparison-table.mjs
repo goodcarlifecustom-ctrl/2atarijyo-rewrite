@@ -10,9 +10,11 @@ const originalPath = path.join(ARTICLE_DIR, "original.html");
 const resultPath = path.join(ARTICLE_DIR, "comparison-table.json");
 const changeLogPath = path.join(ARTICLE_DIR, "change-log.md");
 
-const includeKeywords = ["おすすめ", "ランキング", "比較", "アプリ", "サービス", "店舗", "商品", "紹介", "選び方", "人気", "厳選"];
-const excludeKeywords = ["faq", "よくある質問", "質問", "まとめ", "注意点", "注意", "デメリット", "目次", "この記事でわかること"];
-const serviceKeywords = ["アプリ", "出会い", "サービス", "サイト", "公式", "登録", "料金", "ポイント", "会員"];
+const includeKeywords = ["おすすめ", "ランキング", "比較", "アプリ", "サービス", "店舗", "商品", "紹介", "人気", "厳選", "ベスト", "人気順"];
+const excludeKeywords = ["faq", "よくある質問", "質問", "まとめ", "注意点", "注意", "デメリット", "目次", "この記事でわかること", "選び方", "方法", "手順", "チェックリスト", "ポイント", "確認", "避け", "安全", "使い方", "リスク"];
+const excludedHeadingPatterns = [/を選ぶ/u, /を確認/u, /のポイント/u, /チェックリスト/u, /方法/u, /手順/u, /注意/u, /避け/u, /安全/u, /会員数/u, /年齢層/u, /機能があるか/u, /しっかりしているか/u];
+const serviceNameHints = ["アプリ", "サービス", "サイト", "公式", "店", "店舗", "サロン", "商品", "プラン", "with", "pairs", "tinder", "タップル", "pcmax", "ハッピーメール", "ワクワクメール"];
+const serviceKeywords = ["アプリ", "出会い", "サービス", "サイト", "公式", "登録", "料金", "会員"];
 const shopKeywords = ["店舗", "スポット", "エリア", "住所", "アクセス", "場所", "店", "サロン"];
 
 async function exists(filePath) {
@@ -80,11 +82,38 @@ function headingText(rawHeading) {
 
 function shouldExcludeHeading(text, contextText) {
   const combined = `${text} ${contextText}`.toLowerCase();
-  return excludeKeywords.some((keyword) => combined.includes(keyword));
+  return excludeKeywords.some((keyword) => combined.includes(keyword)) || excludedHeadingPatterns.some((pattern) => pattern.test(text));
 }
 
 function contextIsRelevant(text) {
   return includeKeywords.some((keyword) => text.includes(keyword));
+}
+
+function parentIsComparisonSource(parentH2) {
+  if (!parentH2) return false;
+  if (excludeKeywords.some((keyword) => parentH2.toLowerCase().includes(keyword))) return false;
+  return /(おすすめ|ランキング|比較|人気|厳選|紹介|ベスト|一覧)/u.test(parentH2);
+}
+
+function looksLikeServiceName(text) {
+  const normalized = text.replace(/^\s*[0-9０-９]+[位.．、)]\s*/u, "").trim();
+  if (!normalized || normalized.length > 38) return false;
+  if (excludedHeadingPatterns.some((pattern) => pattern.test(normalized))) return false;
+  if (/[。！？]/u.test(normalized)) return false;
+  return serviceNameHints.some((hint) => normalized.toLowerCase().includes(hint.toLowerCase())) || /^[A-Za-z0-9][A-Za-z0-9+ ._-]{1,25}$/u.test(normalized);
+}
+
+function candidateQuality(candidates) {
+  const cellCount = candidates.length * 4;
+  const fallbackCount = candidates.reduce((total, candidate) => total + ["feature", "price", "suitableFor", "caution"].filter((field) => candidate[field] === FALLBACK).length, 0);
+  const linkCount = candidates.filter((candidate) => candidate.link).length;
+  return {
+    fallbackCount,
+    cellCount,
+    fallbackRatio: cellCount === 0 ? 1 : fallbackCount / cellCount,
+    linkCount,
+    linkRatio: candidates.length === 0 ? 0 : linkCount / candidates.length,
+  };
 }
 
 function parseHeadingSections(html) {
@@ -112,10 +141,13 @@ function extractCandidates(html) {
   for (const section of sections) {
     if (section.level !== 3) continue;
     const contextText = `${section.parentH2} ${section.text}`;
+    if (!parentIsComparisonSource(section.parentH2)) continue;
     if (!contextIsRelevant(contextText)) continue;
     if (shouldExcludeHeading(section.text, contextText)) continue;
     const bodyText = stripTags(section.body);
     const link = findNearbyLink(section.body.slice(0, 2500));
+    if (!link && !looksLikeServiceName(section.text)) continue;
+    if (!looksLikeServiceName(section.text) && !link) continue;
     candidates.push({
       name: section.text,
       feature: extractSentence(bodyText, ["特徴", "メリット", "おすすめ", "強み", "人気", "便利"]),
@@ -162,18 +194,46 @@ function buildTable(candidates, columns) {
 }
 
 function hasComparisonTable(html) {
-  return /class=["'][^"']*comparison-table-block/i.test(html) || /<table\b[\s\S]*?(比較項目|サービス名|公式サイト・詳細|料金・費用感)[\s\S]*?<\/table>/i.test(html);
+  return /class=["'][^"']*comparison-table-block/i.test(html) || /<table\b[\s\S]*?(比較項目|サービス名|名称|公式サイト・詳細|料金・費用感)[\s\S]*?<\/table>/i.test(html);
+}
+
+function findCapboxEndAfterWakaru(html) {
+  const wakaruIndex = html.search(/この記事でわかること/i);
+  if (wakaruIndex < 0) return null;
+
+  const stack = [];
+  const containingCapboxes = [];
+  const tagRe = /<\/?div\b[^>]*>/gi;
+  for (const match of html.matchAll(tagRe)) {
+    if (!match[0].startsWith("</")) {
+      stack.push({ start: match.index, tag: match[0] });
+      continue;
+    }
+    const open = stack.pop();
+    if (!open) continue;
+    const end = match.index + match[0].length;
+    if (open.start <= wakaruIndex && wakaruIndex < end) {
+      const block = html.slice(open.start, end);
+      if (/cap_box|capbox|swell-block-capbox/i.test(open.tag) || /cap_box|capbox|swell-block-capbox/i.test(block.slice(0, 400))) {
+        containingCapboxes.push({ start: open.start, end });
+      }
+    }
+  }
+
+  if (containingCapboxes.length === 0) return null;
+  containingCapboxes.sort((a, b) => a.start - b.start || b.end - a.end);
+  return containingCapboxes[0].end;
 }
 
 function findInsertion(html) {
-  const wakaru = html.match(/この記事でわかること[\s\S]*?(<\/ul>|<\/ol>)/i);
-  if (wakaru?.index !== undefined) return { index: wakaru.index + wakaru[0].length, label: "「この記事でわかること」リストの直後" };
+  const capboxEnd = findCapboxEndAfterWakaru(html);
+  if (capboxEnd !== null) return { index: capboxEnd, label: "「この記事でわかること」capboxの直後" };
 
   const recommendH2 = html.match(/<h2\b[^>]*>[\s\S]*?(おすすめ|ランキング)[\s\S]*?<\/h2>/i);
   if (recommendH2?.index !== undefined) return { index: recommendH2.index, label: "おすすめ・ランキング系H2の直前" };
 
-  const compareH2 = html.match(/<h2\b[^>]*>[\s\S]*?(比較|選び方)[\s\S]*?<\/h2>/i);
-  if (compareH2?.index !== undefined) return { index: compareH2.index, label: "最初の比較・選び方系H2の直前" };
+  const compareH2 = html.match(/<h2\b[^>]*>[\s\S]*?(比較)[\s\S]*?<\/h2>/i);
+  if (compareH2?.index !== undefined) return { index: compareH2.index, label: "最初の比較系H2の直前" };
 
   return { index: 0, label: "記事冒頭" };
 }
@@ -202,6 +262,18 @@ if (alreadyExists) {
 } else if (candidates.length < 2) {
   reason = "比較候補が2件未満のため、比較表を作成しませんでした。";
 } else {
+  const quality = candidateQuality(candidates);
+  const nonServiceNames = candidates.filter((candidate) => !looksLikeServiceName(candidate.name) && !candidate.link).map((candidate) => candidate.name);
+  if (quality.fallbackRatio >= 0.5) {
+    reason = `「${FALLBACK}」が半数以上になるため、低品質な比較表は作成しませんでした。`;
+  } else if (quality.linkRatio < 0.5) {
+    reason = "公式サイト・詳細リンクを持つ候補が半数未満のため、比較表を作成しませんでした。";
+  } else if (nonServiceNames.length > 0) {
+    reason = `サービス名ではない候補が含まれるため、比較表を作成しませんでした: ${nonServiceNames.join(", ")}`;
+  }
+}
+
+if (!alreadyExists && !inserted && !reason) {
   const tableHtml = buildTable(candidates, detectColumns(html));
   const insertedResult = insertTable(html, tableHtml);
   outputHtml = insertedResult.html;
