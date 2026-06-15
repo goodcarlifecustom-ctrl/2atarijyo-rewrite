@@ -68,6 +68,31 @@ function countOccurrences(text, phrase) {
   return (text.match(new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length;
 }
 
+
+function tableBlocks(html) {
+  return [...html.matchAll(/<table\b[\s\S]*?<\/table>/gi)].map((match) => match[0]);
+}
+
+function isComparisonTable(tableHtml) {
+  return /(比較項目|サービス名|名称|公式サイト・詳細|料金・費用感)/i.test(stripHtml(tableHtml));
+}
+
+function tableLinks(tableHtml) {
+  return [...tableHtml.matchAll(/<a\b([^>]*)>/gi)].map((match) => match[1]);
+}
+
+function attrIncludes(attrs, name, expected) {
+  const match = attrs.match(new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, "i"));
+  if (!match) return false;
+  return match[2].split(/\s+/).includes(expected);
+}
+
+function likelyNeedsComparisonTable(html) {
+  const text = stripHtml(html);
+  const h3Count = countHeadings(html, 3);
+  return h3Count >= 2 && /(おすすめ|ランキング|比較|アプリ|サービス|店舗|商品|紹介)/.test(text);
+}
+
 function hasSevereHtmlBreakage(html) {
   const stack = [];
   const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
@@ -136,6 +161,35 @@ if (original !== null && rewritten !== null) {
   });
 
   addCheck("html_not_severely_broken", !hasSevereHtmlBreakage(rewritten), "WordPressに貼り付け可能なHTMLとして大きく崩れていない");
+
+  const comparisonTables = tableBlocks(rewritten).filter(isComparisonTable);
+  const needsComparison = likelyNeedsComparisonTable(rewritten);
+  addCheck("comparison_table_not_duplicated", comparisonTables.length <= 1, "比較表が重複していない", {
+    count: comparisonTables.length,
+  });
+
+  if (comparisonTables.length > 0) {
+    const links = comparisonTables.flatMap(tableLinks);
+    const missingTarget = links.filter((attrs) => !attrIncludes(attrs, "target", "_blank"));
+    const missingRel = links.filter((attrs) => !attrIncludes(attrs, "rel", "noopener") || !attrIncludes(attrs, "rel", "noreferrer"));
+    addCheck("comparison_table_links_have_target_blank", missingTarget.length === 0, "比較表内リンクに target=\"_blank\" が入っている", {
+      linkCount: links.length,
+      missingCount: missingTarget.length,
+    });
+    addCheck("comparison_table_links_have_rel", missingRel.length === 0, "比較表内リンクに rel=\"noopener noreferrer\" が入っている", {
+      linkCount: links.length,
+      missingCount: missingRel.length,
+    });
+    addCheck("comparison_table_has_no_empty_cells", !/<td[^>]*>\s*<\/td>/i.test(comparisonTables.join("\n")), "比較表に空のセルがない");
+  } else {
+    checks.push({
+      name: "comparison_table_presence_warning",
+      passed: true,
+      message: needsComparison ? "比較表が必要な可能性があります（未設置でも自動失敗にはしません）" : "比較表が不要な記事として扱います",
+      details: { likelyNeedsComparisonTable: needsComparison },
+    });
+  }
+
 }
 
 const result = {

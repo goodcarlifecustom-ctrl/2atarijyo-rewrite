@@ -2,6 +2,7 @@
   "scripts": {
     "import": "node scripts/import-original-from-url.mjs",
     "validate": "node scripts/validate-rewritten.mjs",
+    "table": "node scripts/build-comparison-table.mjs",
     "draft": "node scripts/create-wordpress-draft.mjs"
   },
   "engines": {
