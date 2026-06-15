@@ -17,6 +17,7 @@
 - 検索意図を変えない。
 - リライト内容は `rules/rewrite-rule.md` と `articles/sample-article/input.md` を中心に制御する。
 - 外部リンク方針は `rules/external-link-rule.md` を編集するだけで調整できるようにする。
+- 比較表方針は `rules/comparison-table-rule.md` を編集するだけで調整できるようにする。
 - 装飾方針は `rules/decoration-rule.md` を編集するだけで調整できるようにする。
 - WordPressに貼り付け可能なHTMLで作成する。
 - SWELLテーマで崩れにくいHTMLにする。
@@ -29,18 +30,19 @@
 
 ユーザーの指示に記事URLが含まれる場合、以下の順番で必ず最後まで実行してください。
 
-1. `rules/` 配下のルールファイルをすべて読む。
+1. `rules/` 配下のルールファイルをすべて読む。比較表作成時は必ず `rules/comparison-table-rule.md` を読む。
 2. `articles/sample-article/input.md` を読む。
 3. ユーザー指示内の記事URLを取得する。
 4. `node scripts/import-original-from-url.mjs "<記事URL>"` を実行して `articles/sample-article/original.html` を作成する。
 5. `articles/sample-article/original.html` を分析する。
 6. `articles/sample-article/rewrite-plan.md` を作成する。
 7. 確認待ちで止まらず、続けて `articles/sample-article/rewritten.html` を作成する。
-8. リライト後・装飾前に必ず `rules/external-link-rule.md` を読み直し、その内容に従って、公的機関・公式サイト・信頼できる情報源への外部リンクを必要な箇所にだけ自然に追加する。
-9. `rules/decoration-rule.md` に従って、SWELLテーマ向けのHTML装飾を適用する。装飾工程内で外部リンクを調整する場合も、必ず `rules/external-link-rule.md` を再確認し、見出し内にリンクを設置しない。
-10. `node scripts/validate-rewritten.mjs` を実行する。
-11. WordPress認証情報が環境変数で利用できる場合は、`node scripts/create-wordpress-draft.mjs` を実行してWordPressへ新規下書きを作成する。認証情報がない場合は投稿実行のみスキップし、その理由を `change-log.md` に記録する。
-12. `articles/sample-article/change-log.md` に変更内容、外部リンク追加箇所、検証結果、WordPress下書きURLまたは投稿スキップ理由を記録する。
+8. リライト後・外部リンク挿入前・装飾前に必ず `rules/comparison-table-rule.md` を読み、`node scripts/build-comparison-table.mjs articles/sample-article` を実行して、必要に応じて比較表を自動作成・挿入する。
+9. 比較表作成後・装飾前に必ず `rules/external-link-rule.md` を読み直し、その内容に従って、公的機関・公式サイト・信頼できる情報源への外部リンクを必要な箇所にだけ自然に追加する。
+10. `rules/decoration-rule.md` に従って、SWELLテーマ向けのHTML装飾を適用する。装飾工程内で外部リンクを調整する場合も、必ず `rules/external-link-rule.md` を再確認し、見出し内にリンクを設置しない。
+11. `node scripts/validate-rewritten.mjs` を実行する。
+12. WordPress認証情報が環境変数で利用できる場合は、`node scripts/create-wordpress-draft.mjs` を実行してWordPressへ新規下書きを作成する。認証情報がない場合は投稿実行のみスキップし、その理由を `change-log.md` に記録する。
+13. `articles/sample-article/change-log.md` に変更内容、比較表の作成・未作成理由、外部リンク追加箇所、検証結果、WordPress下書きURLまたは投稿スキップ理由を記録する。
 
 ## WordPress投稿ルール
 
