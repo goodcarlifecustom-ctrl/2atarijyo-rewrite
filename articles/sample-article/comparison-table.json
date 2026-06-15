@@ -1,14 +1,14 @@
 {
   "ok": true,
-  "generatedAt": "2026-06-15T05:58:59.370Z",
+  "generatedAt": "2026-06-15T06:33:57.342Z",
   "articleDir": "articles/sample-article",
   "sourcePath": "articles/sample-article/rewritten.html",
   "rewrittenPath": "articles/sample-article/rewritten.html",
   "inserted": true,
   "insertionLabel": "「この記事でわかること」capboxの直後",
   "reason": null,
-  "extractedCandidateCount": 10,
-  "tableItemCount": 10,
+  "extractedCandidateCount": 9,
+  "tableItemCount": 9,
   "fallbackFields": [
     "ワクワクメール（コスパ重視）:caution",
     "イククル（地方でも出会いやすい）:caution",
@@ -115,14 +115,7 @@
         "href": "https://dthree.app/",
         "label": "D3"
       }
-    },
-    {
-      "name": "無料で利用できるセックス向けアプリ",
-      "feature": "できるだけお金をかけずに出会いたいという人には、無料で利用できるマッチングアプリがおすすめです",
-      "price": "できるだけお金をかけずに出会いたいという人には、無料で利用できるマッチングアプリがおすすめです",
-      "suitableFor": "できるだけお金をかけずに出会いたいという人には、無料で利用できるマッチングアプリがおすすめです",
-      "caution": "ただし、 手軽さゆえに業者や真剣度の低いユーザーも多いため、相手をしっかり見極める必要があります",
-      "link": null
     }
-  ]
+  ],
+  "manualQualityFix": "比較表品質修正として、サービス名ではない目的別H3「無料で利用できるセックス向けアプリ」を表から除外。"
 }
