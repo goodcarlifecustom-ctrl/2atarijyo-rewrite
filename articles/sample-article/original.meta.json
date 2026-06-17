@@ -1,10 +1,16 @@
 {
-  "source_url": "https://www.atarijo.com/media/datingapp-osusume10/",
+  "source_url": "https://poi-poi.co.jp/bike/shashu/",
   "output_path": "articles/sample-article/original.html",
-  "saved_at": "2026-06-15T06:32:32.157Z",
-  "source_type": "wordpress-rest-auth:posts",
-  "api_url": "https://www.atarijo.com/media/wp-json/wp/v2/posts?slug=datingapp-osusume10&_fields=id%2Cslug%2Clink%2Ctitle%2Ccontent%2Cstatus%2Ctype&context=view",
-  "title": "セックスできるアプリおすすめ10選最新版！マッチングアプリ＆出会い系で選ぶ！",
-  "character_count": 67532,
-  "backup_path": "articles/sample-article/original.backup-20260615-063232.html"
+  "saved_at": "2026-06-17T09:47:52.233Z",
+  "source_type": "fetch-failed",
+  "fetchSource": "fallback",
+  "fetchOk": false,
+  "fetchedUrl": "https://poi-poi.co.jp/bike/shashu/",
+  "fetchError": "fetch failed",
+  "extractedSelector": "",
+  "sanitized": false,
+  "api_url": "",
+  "title": "",
+  "character_count": 0,
+  "backup_path": ""
 }

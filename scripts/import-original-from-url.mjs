@@ -16,6 +16,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { extractContentRootDetailed } from "./article-html-utils.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -321,91 +322,15 @@ async function tryFetchWordPressContent(pageHtml, urlObj) {
   return null;
 }
 
-function removeNoise(html) {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
-    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "");
-}
-
-function sliceElementByOpeningMatch(html, openingMatch) {
-  const fullOpeningTag = openingMatch[0];
-  const tagName = openingMatch[1].toLowerCase();
-  const startIndex = openingMatch.index;
-  const afterOpeningIndex = startIndex + fullOpeningTag.length;
-
-  const tagRegex = new RegExp(`<\\/?${tagName}\\b[^>]*>`, "gi");
-  tagRegex.lastIndex = afterOpeningIndex;
-
-  let depth = 1;
-  let match;
-
-  while ((match = tagRegex.exec(html)) !== null) {
-    const tag = match[0];
-
-    if (tag.startsWith(`</`)) {
-      depth -= 1;
-    } else if (!tag.endsWith("/>")) {
-      depth += 1;
-    }
-
-    if (depth === 0) {
-      return html.slice(startIndex, tagRegex.lastIndex);
-    }
-  }
-
-  return "";
-}
-
-function extractElementByClass(html, className) {
-  const regex = new RegExp(
-    `<([a-z0-9]+)\\b[^>]*class=["'][^"']*${className}[^"']*["'][^>]*>`,
-    "i"
-  );
-
-  const match = regex.exec(html);
-  if (!match) return "";
-
-  return sliceElementByOpeningMatch(html, match);
-}
-
-function extractElementByTag(html, tagName) {
-  const regex = new RegExp(`<(${tagName})\\b[^>]*>`, "i");
-  const match = regex.exec(html);
-  if (!match) return "";
-
-  return sliceElementByOpeningMatch(html, match);
-}
-
 function extractMainContent(pageHtml) {
-  const cleaned = removeNoise(pageHtml);
-  const minHtmlLength = getMinHtmlLength();
-
-  const candidates = [
-    extractElementByClass(cleaned, "post_content"),
-    extractElementByClass(cleaned, "entry-content"),
-    extractElementByClass(cleaned, "p-entry__content"),
-    extractElementByClass(cleaned, "articleBody"),
-    extractElementByClass(cleaned, "article-body"),
-    extractElementByClass(cleaned, "main_content"),
-    extractElementByTag(cleaned, "article"),
-    extractElementByTag(cleaned, "main"),
-  ].filter((html) => html && html.trim().length > minHtmlLength);
-
-  if (candidates.length > 0) {
-    candidates.sort((a, b) => b.length - a.length);
-    return {
-      html: candidates[0].trim(),
-      sourceType: "public-html-extract",
-      apiUrl: "",
-      title: "",
-    };
-  }
+  const extracted = extractContentRootDetailed(pageHtml, getMinHtmlLength());
 
   return {
-    html: cleaned.trim(),
-    sourceType: "full-public-html",
+    html: extracted.html.trim(),
+    sourceType: "public-html-article-body-extract",
+    fetchSource: "public-html",
+    extractedSelector: extracted.extractedSelector,
+    sanitized: extracted.sanitized,
     apiUrl: "",
     title: "",
   };
@@ -451,6 +376,28 @@ async function backupIfNeeded(filePath) {
   }
 }
 
+async function writeFailureMeta(error) {
+  await ensureDir(path.dirname(outputPath));
+  const metaPath = path.join(path.dirname(outputPath), "original.meta.json");
+  const meta = {
+    source_url: sourceUrl,
+    output_path: outputPath,
+    saved_at: new Date().toISOString(),
+    source_type: "fetch-failed",
+    fetchSource: "fallback",
+    fetchOk: false,
+    fetchedUrl: sourceUrl,
+    fetchError: error?.message || String(error || "取得に失敗しました"),
+    extractedSelector: "",
+    sanitized: false,
+    api_url: "",
+    title: "",
+    character_count: 0,
+    backup_path: "",
+  };
+  await writeFile(metaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+}
+
 async function main() {
   console.log(`取得URL: ${sourceUrl}`);
 
@@ -475,15 +422,20 @@ async function main() {
   let result;
 
   if (wpContent) {
-    result = wpContent;
+    const extracted = extractContentRootDetailed(wpContent.html, getMinHtmlLength());
+    result = { ...wpContent, html: extracted.html, fetchSource: "wordpress-rest", extractedSelector: extracted.extractedSelector, sanitized: extracted.sanitized };
   } else if (pageHtml) {
     result = extractMainContent(pageHtml);
   } else {
-    throw pageFetchError || new Error("公開HTMLもWordPress REST APIも取得できませんでした。");
+    const error = pageFetchError || new Error("公開HTMLもWordPress REST APIも取得できませんでした。");
+    await writeFailureMeta(error);
+    throw error;
   }
 
   if (!result.html || result.html.trim().length < getMinHtmlLength()) {
-    throw new Error("取得したHTMLが短すぎます。URLまたは抽出結果を確認してください。");
+    const error = new Error("取得したHTMLが短すぎます。URLまたは抽出結果を確認してください。");
+    await writeFailureMeta(error);
+    throw error;
   }
 
   await ensureDir(path.dirname(outputPath));
@@ -499,6 +451,12 @@ async function main() {
     output_path: outputPath,
     saved_at: new Date().toISOString(),
     source_type: result.sourceType,
+    fetchSource: result.fetchSource || (result.sourceType?.startsWith("wordpress-rest") ? "wordpress-rest" : "public-html"),
+    fetchOk: true,
+    fetchedUrl: sourceUrl,
+    fetchError: "",
+    extractedSelector: result.extractedSelector || "",
+    sanitized: Boolean(result.sanitized),
     api_url: result.apiUrl || "",
     title: result.title || "",
     character_count: result.html.length,

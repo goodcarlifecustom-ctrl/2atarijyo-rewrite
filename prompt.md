@@ -41,16 +41,34 @@
 1. `rules/` 配下をすべて読む。比較表作成時は必ず `rules/comparison-table-rule.md` を読む。
 2. `articles/sample-article/input.md` を読む。
 3. ユーザー指示内の記事URLを取得する。
-4. `node scripts/import-original-from-url.mjs "<記事URL>"` を実行し、`articles/sample-article/original.html` を作成する。
+4. `node scripts/import-original-from-url.mjs "<記事URL>"` を実行し、WordPress/SWELLテーマ由来の関連記事一覧・投稿一覧・ページネーション・サイドバー・フッター・ナビゲーションを除いた記事本文のみを `articles/sample-article/original.html` に作成する。
 5. `articles/sample-article/original.html` を分析し、検索意図、既存H2/H3、残すべき重要見出し、不足情報を確認する。
 6. `articles/sample-article/rewrite-plan.md` を作成する。
 7. 確認待ちで止まらず、続けて `articles/sample-article/rewritten.html` を作成する。
 8. リライト後・外部リンク挿入前・装飾前に必ず `rules/comparison-table-rule.md` を読み、`node scripts/build-comparison-table.mjs articles/sample-article` を実行して、必要に応じて比較表を自動作成・挿入する。
 9. 比較表作成後・装飾前に必ず `rules/external-link-rule.md` を読み直し、その内容に従い、公的機関・公式サイト・信頼できる情報源への外部リンクを必要な箇所にだけ自然に追加する。
 10. `rules/decoration-rule.md` に従い、SWELL向けにHTML装飾を適用する。装飾工程内で外部リンクを調整する場合も、必ず `rules/external-link-rule.md` を再確認し、見出し内にリンクを設置しない。
-11. `node scripts/validate-rewritten.mjs` を実行してHTMLを検証する。
+11. `node scripts/validate-rewritten.mjs` を実行し、`p-postList` / `p-postList__title` / `c-tabBody` / `p-postListTabBody` / `c-pagination` / `page-numbers` / `main#main_content` などの本文外HTMLが残っていないか検査する。検出時は自動削除・修正し、`articles/sample-article/check-report.md` に結果を記録する。
 12. WordPress認証情報が環境変数で設定されている場合、`node scripts/create-wordpress-draft.mjs` を実行し、WordPressへ新規下書きを作成する。認証情報がない場合は投稿実行のみスキップする。
-13. `articles/sample-article/change-log.md` に、変更内容、比較表の作成・未作成理由、外部リンク追加箇所、検証結果、WordPress下書きURLまたは投稿スキップ理由を記録する.
+13. `articles/sample-article/change-log.md` に、変更内容、比較表の作成・未作成理由、外部リンク追加箇所、検証結果、本文外HTMLチェック結果、WordPress下書きURLまたは投稿スキップ理由を記録する。
+
+
+
+### URL取得失敗時の扱い
+
+- 対象URLから直接 `original.html` を生成できた場合のみ「実URL取得OK」または「実URL検証OK」と記録する。
+- URL直接取得に失敗した場合は、既存 `original.html`、代替本文、fixture を使って成功扱いにしない。`original.meta.json`、`check-report.md`、`validation-result.json`、`change-log.md` に「URL直接取得失敗」と記録する。
+- 代替本文やfixtureで確認した場合は「実URL相当検証OK」または「fixture検証OK」と記録し、実URL直接取得と区別する。
+- URL直接取得に失敗した場合はWordPress下書き作成をスキップし、その理由を `check-report.md` と `change-log.md` に記録する。
+- `original.meta.json` には `fetchSource`、`fetchOk`、`fetchedUrl`、`fetchError`、`extractedSelector`、`sanitized` を記録する。
+
+
+### validate-rewritten.mjs の validationMode
+
+- デフォルトは `production`。URL一発ワークフロー本番ではこのモードを使い、`fetchOk: false` は必ず失敗扱いにする。
+- `fixture` はfixture・代替本文の検証用。`fetchOk: false` を許容するが、`check-report.md` / `validation-result.json` に「fixture検証OK」「実URL取得ではない」と明記する。
+- `content-only` は本文HTML構造のみの検証用。URL取得成否は警告扱いにするが、「実URL取得OK」とは記録しない。
+- `fetchOk: false` の場合、productionでは下書き作成禁止。fixture/content-onlyでも下書き作成対象外として扱う。
 
 ## rewrite-plan.md に含める内容
 
@@ -89,6 +107,9 @@
 
 - 比較表は `rules/comparison-table-rule.md` に従い、「この記事でわかること」のcapbox内には入れない。
 - 既存比較表がある場合は重複追加しない。
+- `original.html` / `rewritten.html` / WordPress下書き本文には、本文外の関連記事一覧・投稿一覧・ページネーション・サイドバー・フッター・ナビゲーションを含めない。
+- 本文内のメーカー別・車種別相場表や本文内リンクは削除しない。削除対象は本文外の関連記事カード、投稿一覧、ページネーションなどに限定する。
+- 本文外の関連記事一覧・投稿一覧に含まれるH2（例: `p-postList__title`）は本文見出しとして扱わず、必ず削除する。
 - 比較表候補はおすすめ・ランキング・サービス紹介系H2配下のサービス名、アプリ名、商品名、店舗名に限定する。
 - 選び方、注意点、FAQ、まとめ、方法、手順、チェックリスト系のH3は比較表に入れない。
 - 本文のないH2/H3、数字だけ違う量産見出し、同じH3の繰り返し、文字数稼ぎの見出し追加は禁止する。

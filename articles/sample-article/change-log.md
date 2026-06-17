@@ -1,33 +1,36 @@
 # change-log
 
-## 初期処理
-- 指定URLから original.html を取得しました。
-- 元記事HTMLを分析し、rewrite-plan.md を作成しました。
-- rewritten.html は元記事の重要見出し・情報量を維持したうえで、比較表品質修正版ワークフローの後続工程に回しました。
+## 対象URL
+https://poi-poi.co.jp/bike/shashu/
 
-## 比較表作成・挿入（2026-06-15T06:33:57.344Z）
+## 実施内容
+- `node scripts/import-original-from-url.mjs "https://poi-poi.co.jp/bike/shashu/"` を実行しました。
+- コンテナから対象URLへの直接取得は `fetch failed` で失敗しました。
+- 直接取得失敗時に、`original.meta.json` へ `fetchSource: "fallback"`、`fetchOk: false`、`fetchedUrl`、`fetchError`、`extractedSelector`、`sanitized` を記録することを確認しました。
+- 既存の `original.html` / `rewritten.html` に対して `node scripts/validate-rewritten.mjs articles/sample-article` を実行し、`check-report.md` と `validation-result.json` に「URL直接取得失敗」が明記されることを確認しました。
 
-- 挿入位置: 「この記事でわかること」capboxの直後
-- 抽出した候補数: 10
-- 表に入れた項目数: 10
-- 情報不足で「追加確認が必要」とした項目: ワクワクメール（コスパ重視）:caution, イククル（地方でも出会いやすい）:caution, Cuddle（初心者向け）:caution, タップル（若年層が中心）:caution
-- 公式サイトまたは外部ページへのアクセス確認: 追加アクセスなし
-- 比較表を作成・挿入しました。
+## 本文外HTMLチェック
+- `p-postList`: 検出なし
+- `p-postList__title`: 検出なし
+- `c-tabBody`: 検出なし
+- `p-postListTabBody`: 検出なし
+- `c-pagination`: 検出なし
+- `page-numbers`: 検出なし
+- 関連記事カード: 検出なし
+- 投稿一覧カード: 検出なし
+- 本文外の関連記事H2: 検出なし
 
-## 比較表品質修正
-- サービス名ではない目的別H3「無料で利用できるセックス向けアプリ」が比較表に混入していたため、比較表から除外しました。
-- 比較表は「この記事でわかること」capboxの閉じタグ直後に配置し、capbox内には入れていません。
-- 選び方・注意点・FAQ・まとめ・チェックリスト系H3は比較表に含めていません。
+## 比較表
+比較候補が2件未満のため作成しませんでした。この記事はメーカー別・車種別相場リンク集が主目的であり、本文外の関連記事カードを比較表候補として使わないことを優先しました。
 
-## 最終検証・WordPress下書き作成
-- URL取得: 成功
-- rewritten.html文字数: 20405
-- 比較表作成: 成功
-- 比較表の挿入位置: 「この記事でわかること」capboxの直後
-- 比較表の品質修正: サービス名ではない目的別H3を除外し、表内項目は9件
-- HTML検証: 成功
-- WordPress下書き作成: 成功
-- WordPress下書き本文: あり
-- 下書きID: 1619
-- 編集URL: https://www.atarijo.com/wp-admin/post.php?post=1619&action=edit
-- 残っている問題点: なし
+## 外部リンク
+元記事本文内のメーカー別・車種別リンクを保持しています。追加の外部リンクは実施していません。
+
+## WordPress投稿
+URL直接取得に失敗しているため、WordPress下書き作成はスキップしました。既存本文や代替本文を使った場合は、実URL直接取得成功として扱いません。
+
+## 検証結果
+`node scripts/validate-rewritten.mjs articles/sample-article` は、productionモードでURL直接取得失敗を検出するため意図通り失敗ステータスになりました。`node scripts/validate-rewritten.mjs articles/sample-article --mode=fixture` は、fixture検証としてURL直接取得失敗を許容し、`check-report.md` と `validation-result.json` に `fixture検証OK（実URL取得ではない）`、`fetchOk: false`、`fetchSource: fallback`、`fetchError: fetch failed` が記録されています。
+
+## 結論
+実URL取得OKではありません。今回は対象URLの直接取得が失敗したため、既存本文を使った確認は「fixture検証」または「実URL相当検証」として扱います。productionモードでは下書き作成禁止、fixture/content-onlyモードでも下書き作成対象外です。
