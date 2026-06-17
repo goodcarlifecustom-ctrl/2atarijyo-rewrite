@@ -2,11 +2,18 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { sanitizeArticleHtml } from "./article-html-utils.mjs";
 
 const articleDir = process.argv[2] || "articles/sample-article";
 const originalPath = path.join(articleDir, "original.html");
 const rewrittenPath = path.join(articleDir, "rewritten.html");
+const metaPath = path.join(articleDir, "original.meta.json");
 const resultPath = path.join(articleDir, "validation-result.json");
+const reportPath = path.join(articleDir, "check-report.md");
+const allowedValidationModes = new Set(["production", "fixture", "content-only"]);
+const modeArg = process.argv.find((arg) => arg.startsWith("--mode="));
+const requestedValidationMode = modeArg ? modeArg.slice("--mode=".length) : (process.env.VALIDATION_MODE || "production");
+const validationMode = allowedValidationModes.has(requestedValidationMode) ? requestedValidationMode : "production";
 
 const checks = [];
 let hasError = false;
@@ -351,10 +358,45 @@ function hasSevereHtmlBreakage(html) {
 }
 
 const original = await readOptional(originalPath);
-const rewritten = await readOptional(rewrittenPath);
+const metaText = await readOptional(metaPath);
+const originalMeta = metaText ? JSON.parse(metaText) : null;
+let rewritten = await readOptional(rewrittenPath);
+let themeCleanupReport = null;
+
+if (rewritten !== null && !isPlaceholderRewritten(rewritten)) {
+  const sanitized = sanitizeArticleHtml(rewritten);
+  themeCleanupReport = sanitized.report;
+  if (sanitized.html !== rewritten.trim()) {
+    rewritten = sanitized.html + "\n";
+    await writeFile(rewrittenPath, rewritten, "utf8");
+  }
+}
 
 addCheck("original_exists", original !== null, `${originalPath} が存在する`);
 addCheck("rewritten_exists", rewritten !== null, `${rewrittenPath} が存在する`);
+
+if (originalMeta) {
+  const fetchFailed = originalMeta.fetchOk === false;
+  const fetchFailureAllowed = validationMode === "fixture" || validationMode === "content-only";
+  const fetchCheckPassed = !fetchFailed || fetchFailureAllowed;
+  const fetchMessage = !fetchFailed
+    ? "URL取得に成功している"
+    : validationMode === "fixture"
+      ? "URL直接取得失敗（fixture検証として許容）"
+      : validationMode === "content-only"
+        ? "URL直接取得失敗（本文構造チェックのみのため警告）"
+        : "URL直接取得失敗";
+  addCheck("url_fetch_ok", fetchCheckPassed, fetchMessage, {
+    validationMode,
+    fetchSource: originalMeta.fetchSource || originalMeta.source_type || "",
+    fetchOk: originalMeta.fetchOk,
+    fetchedUrl: originalMeta.fetchedUrl || originalMeta.source_url || "",
+    fetchError: originalMeta.fetchError || "",
+    extractedSelector: originalMeta.extractedSelector || "",
+    sanitized: originalMeta.sanitized ?? null,
+    draftAllowed: !fetchFailed,
+  });
+}
 
 const rewrittenIsPlaceholder = rewritten !== null && isPlaceholderRewritten(rewritten);
 
@@ -408,6 +450,18 @@ if (original !== null && rewritten !== null && !rewrittenIsPlaceholder) {
   });
 
   addCheck("html_not_severely_broken", !hasSevereHtmlBreakage(rewritten), "WordPressに貼り付け可能なHTMLとして大きく崩れていない");
+  const forbiddenThemeTokens = [
+    "p-postList",
+    "p-postList__title",
+    "c-tabBody",
+    "p-postListTabBody",
+    "c-pagination",
+    "page-numbers",
+  ];
+  const forbiddenHits = forbiddenThemeTokens.filter((token) => rewritten.includes(token));
+  addCheck("theme_list_html_absent", forbiddenHits.length === 0, "関連記事一覧・投稿一覧・ページネーション由来のHTMLが残っていない", { hits: forbiddenHits });
+  addCheck("main_content_not_embedded", !/<main\b[^>]*\bid\s*=\s*(["'])main_content\1/i.test(rewritten), "テーマ由来の main#main_content が丸ごと混入していない");
+
 
   const wakaruCapboxes = wakarukotoCapboxes(rewritten);
   const wakaruCapboxesWithTable = wakaruCapboxes.filter((block) => /<table\b/i.test(block));
@@ -505,10 +559,122 @@ if (original !== null && rewritten !== null && !rewrittenIsPlaceholder) {
 
 }
 
+
+function collectHeadingTexts(html, level) {
+  return [...html.matchAll(new RegExp(`<h${level}\\b[^>]*>[\\s\\S]*?<\\/h${level}>`, "gi"))]
+    .map((match) => stripHtmlReadable(match[0]))
+    .filter(Boolean);
+}
+
+function stripHtmlReadable(html) {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function ctaResidueHits(html) {
+  return [...stripHtml(html).matchAll(/(?:CTA|お問い合わせ|申し込み|申込み|公式サイト|無料相談|査定|登録)[^。！？\n]{0,80}[（(][0-9０-９]+[）)]/gu)].map((match) => match[0]);
+}
+
+function importantHeadingStatus(originalHtml, rewrittenHtml) {
+  const originalHeadings = [...collectHeadingTexts(originalHtml, 2), ...collectHeadingTexts(originalHtml, 3)];
+  const rewrittenText = stripHtml(rewrittenHtml);
+  return originalHeadings.map((heading) => ({ heading, kept: rewrittenText.includes(heading) || collectHeadingTexts(rewrittenHtml, 2).concat(collectHeadingTexts(rewrittenHtml, 3)).some((value) => value.includes(heading) || heading.includes(value)) }));
+}
+
+if (original !== null && rewritten !== null && !rewrittenIsPlaceholder) {
+  const originalTextLength = stripHtml(original).replace(/\s+/g, "").length;
+  const rewrittenTextLength = stripHtml(rewritten).replace(/\s+/g, "").length;
+  const headingStatus = importantHeadingStatus(original, rewritten);
+  const ctaHits = ctaResidueHits(rewritten);
+  const japaneseHits = unnaturalJapaneseHits(stripHtml(rewritten));
+  const fetchOk = originalMeta?.fetchOk !== false;
+  const fetchLabel = originalMeta
+    ? fetchOk
+      ? "実URL取得OK"
+      : validationMode === "fixture"
+        ? "fixture検証OK（実URL取得ではない）"
+        : validationMode === "content-only"
+          ? "content-only検証OK（URL取得失敗は警告）"
+          : "URL直接取得失敗"
+    : "取得メタ情報なし";
+  const fetchFailureNotes = fetchOk
+    ? []
+    : validationMode === "fixture"
+      ? ["- 注意: fixture検証のためURL直接取得失敗を許容しています。実URL取得OKではありません。", "- 下書き作成: fixture検証のためスキップ対象です。"]
+      : validationMode === "content-only"
+        ? ["- 注意: content-only検証のためURL取得成否は警告扱いです。実URL取得OKではありません。", "- 下書き作成: URL直接取得失敗時はスキップ対象です。"]
+        : ["- 注意: 既存 original.html や代替本文を使った検証は、実URL直接取得成功として扱いません。", "- 下書き作成: URL直接取得失敗のため禁止です。"];
+  const lines = [
+    "# check-report",
+    "",
+    "## 元記事取得方法",
+    `- validationMode: ${validationMode}`,
+    `- 判定: ${fetchLabel}`,
+    `- fetchSource: ${originalMeta?.fetchSource || originalMeta?.source_type || "不明"}`,
+    `- fetchOk: ${originalMeta?.fetchOk ?? "不明"}`,
+    `- fetchedUrl: ${originalMeta?.fetchedUrl || originalMeta?.source_url || "不明"}`,
+    `- fetchError: ${originalMeta?.fetchError || ""}`,
+    `- extractedSelector: ${originalMeta?.extractedSelector || ""}`,
+    `- sanitized: ${originalMeta?.sanitized ?? "不明"}`,
+    ...fetchFailureNotes,
+    "",
+    "## 本文外HTMLの混入チェック結果",
+    themeCleanupReport?.forbiddenHits?.length ? `- 要確認: ${themeCleanupReport.forbiddenHits.join(", ")}` : "- OK: 指定されたテーマ由来HTMLは検出されませんでした。",
+    "",
+    "## 削除したセレクタ名",
+    ...(themeCleanupReport?.removedSelectors?.length ? themeCleanupReport.removedSelectors.map((name) => `- ${name}`) : ["- なし"]),
+    "",
+    "## 削除した関連記事タイトルの数",
+    `- ${themeCleanupReport?.removedRelatedTitleCount ?? 0}`,
+    "",
+    "## 最終的なH2一覧",
+    ...collectHeadingTexts(rewritten, 2).map((heading) => `- 残したH2: ${heading}`),
+    "",
+    "## 本文に残したH2と削除したH2の区別",
+    ...collectHeadingTexts(rewritten, 2).map((heading) => `- 残したH2: ${heading}`),
+    ...(themeCleanupReport?.removedH2?.length ? themeCleanupReport.removedH2.map((heading) => `- 削除したH2: ${heading}`) : ["- 削除したH2: なし"]),
+    "",
+    "## original.html と rewritten.html の本文文字数比較",
+    `- original.html: ${originalTextLength}`,
+    `- rewritten.html: ${rewrittenTextLength}`,
+    `- 比率: ${originalTextLength === 0 ? "N/A" : (rewrittenTextLength / originalTextLength).toFixed(3)}`,
+    "",
+    "## 元記事の重要H2/H3を削除していないか",
+    ...headingStatus.map((item) => `- ${item.kept ? "残存" : "要確認"}: ${item.heading}`),
+    "",
+    "## CTA文言に「（1）」「（2）」などの残骸がないか",
+    ...(ctaHits.length ? ctaHits.map((hit) => `- 要確認: ${hit}`) : ["- OK: CTA付近の番号残骸は検出されませんでした。"]),
+    "",
+    "## 誤字・不自然な文言がないか",
+    ...(japaneseHits.length ? japaneseHits.map((hit) => `- 要確認: ${hit}`) : ["- OK: 既知の不自然な文言は検出されませんでした。"]),
+    "",
+  ];
+  await writeFile(reportPath, `${lines.join("\n")}\n`, "utf8");
+}
+
 const result = {
   ok: !hasError,
+  validationMode,
   generatedAt: new Date().toISOString(),
-  files: { originalPath, rewrittenPath },
+  files: { originalPath, rewrittenPath, metaPath },
+  sourceFetch: originalMeta ? {
+    fetchSource: originalMeta.fetchSource || originalMeta.source_type || "",
+    fetchOk: originalMeta.fetchOk,
+    fetchedUrl: originalMeta.fetchedUrl || originalMeta.source_url || "",
+    fetchError: originalMeta.fetchError || "",
+    extractedSelector: originalMeta.extractedSelector || "",
+    sanitized: originalMeta.sanitized ?? null,
+  } : null,
   checks,
 };
 
